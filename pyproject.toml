@@ -12,6 +12,7 @@ dependencies = [
     "numpy>=2.4.6",
     "pandas>=3.0.5",
     "pygments>=2.21.0",
+    "scikit-learn>=1.9.0",
     "seaborn>=0.13.2",
 ]
 
@@ -21,3 +22,9 @@ depi = "depi:main"
 [build-system]
 requires = ["uv_build>=0.12.0,<0.13.0"]
 build-backend = "uv_build"
+
+[tool.uv.workspace]
+members = [
+    "Depi/data-analysis/Project/Team",
+    "data-analysis/Project/Team",
+]
