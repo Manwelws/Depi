@@ -172,6 +172,14 @@ def show(fig: go.Figure, *, height: int | None = None):
     st.plotly_chart(theme(fig, height=height), width="stretch")
 
 
+def count_frame(series: pd.Series, name: str, *, order: list | None = None) -> pd.DataFrame:
+    """value_counts() as a clean two-column frame: [name, count]. Optionally reorder rows."""
+    out = series.value_counts().rename_axis(name).reset_index(name="count")
+    if order:
+        out = out.set_index(name).reindex(order).rename_axis(name).reset_index()
+    return out
+
+
 # ------------------------------------------------------------------------------
 # Load & prepare
 # ------------------------------------------------------------------------------
@@ -226,24 +234,24 @@ else:
     st.sidebar.caption("Date filter disabled (no valid dates in data).")
 
 
-def multiselect(label: str, col: str) -> None:
-    global df
+def apply_multiselect(df: pd.DataFrame, label: str, col: str, *, order: list | None = None) -> pd.DataFrame:
+    """Filter df through a sidebar multiselect; returns the filtered copy."""
     if col not in df.columns or df[col].dropna().empty:
-        return
+        return df
     options = sorted(df[col].dropna().unique().tolist())
+    if order:
+        options = [o for o in order if o in options]
+    if not options:
+        return df
     selected = st.sidebar.multiselect(label, options, default=options)
-    df = df[df[col].isin(selected)]
+    return df[df[col].isin(selected)]
 
 
-multiselect("User type", "user_type")
-multiselect("Gender", "member_gender")
-
-if "age_group" in df.columns and df["age_group"].dropna().any():
-    options = ["Young", "Adult", "Senior", "Unknown"]
-    available = [o for o in options if o in set(df["age_group"].dropna().unique())]
-    if available:
-        selected = st.sidebar.multiselect("Age group", available, default=available)
-        df = df[df["age_group"].isin(selected)]
+df = apply_multiselect(df, "User type", "user_type")
+df = apply_multiselect(df, "Gender", "member_gender")
+df = apply_multiselect(
+    df, "Age group", "age_group", order=["Young", "Adult", "Senior", "Unknown"]
+)
 
 # Duration slider -------------------------------------------------------------
 if "duration_min" in df.columns and df["duration_min"].notna().any():
@@ -328,8 +336,7 @@ with tab_overview:
                    f"{df['duration_min'].median():.1f} min.")
 
     with c2:
-        counts = df["user_type"].value_counts().reset_index()
-        counts.columns = ["user_type", "count"]
+        counts = count_frame(df["user_type"], "user_type")
         fig = px.bar(
             counts, x="user_type", y="count", color="user_type",
             title="Subscriber vs Customer",
@@ -338,14 +345,19 @@ with tab_overview:
         )
         fig.update_layout(showlegend=False, bargap=0.35)
         show(fig, height=340)
-        st.caption("Subscribers dominate the service. Customers take fewer trips but "
-                   "ride ~2× longer on average (19.5 vs 10.2 min).")
+        dur_by_user = df.groupby("user_type")["duration_min"].mean()
+        if len(dur_by_user) >= 2:
+            longest, shortest = dur_by_user.idxmax(), dur_by_user.idxmin()
+            st.caption(
+                f"Subscribers dominate the service. {longest} take fewer trips but "
+                f"ride ~{dur_by_user[longest] / dur_by_user[shortest]:.1f}× longer "
+                f"on average ({dur_by_user[longest]:.1f} vs {dur_by_user[shortest]:.1f} min)."
+            )
 
     c3, c4 = st.columns(2)
     with c3:
         if "bike_share_for_all_trip" in df.columns:
-            counts = df["bike_share_for_all_trip"].value_counts().reset_index()
-            counts.columns = ["program", "count"]
+            counts = count_frame(df["bike_share_for_all_trip"], "program")
             fig = px.bar(
                 counts, x="program", y="count", color="program",
                 title="Bike Share For All Trips",
@@ -357,11 +369,10 @@ with tab_overview:
 
     with c4:
         if "same_station_trip" in df.columns:
-            counts = (
-                df["same_station_trip"].map({True: "Round trip", False: "One-way"})
-                .value_counts().reset_index()
+            counts = count_frame(
+                df["same_station_trip"].map({True: "Round trip", False: "One-way"}),
+                "trip_type",
             )
-            counts.columns = ["trip_type", "count"]
             fig = px.pie(
                 counts, names="trip_type", values="count", hole=0.45,
                 title="Round Trip vs One-Way", color_discrete_sequence=["#A23B72", "#F18F01"],
@@ -456,16 +467,55 @@ with tab_stations:
                 df.groupby(["start_station_name", "start_station_latitude", "start_station_longitude"])
                 .size().rename("trips").reset_index()
             )
-            fig = px.scatter_map(
-                station_agg,
-                lat="start_station_latitude", lon="start_station_longitude",
-                size="trips", color="trips", hover_name="start_station_name",
-                zoom=10.5, height=560, title="Trips started at each station",
-                color_continuous_scale="Viridis", map_style="carto-positron",
+            station_agg = station_agg.dropna(
+                subset=["start_station_latitude", "start_station_longitude"]
             )
-            show(fig)
+            if station_agg.empty:
+                st.info("No station coordinates available for the current filters.")
+            else:
+                center_lat = float(station_agg["start_station_latitude"].median())
+                center_lon = float(station_agg["start_station_longitude"].median())
+                fig = px.scatter_map(
+                    station_agg,
+                    lat="start_station_latitude", lon="start_station_longitude",
+                    size="trips", color="trips", hover_name="start_station_name",
+                    hover_data={"trips": True,
+                                "start_station_latitude": ":.5f",
+                                "start_station_longitude": ":.5f"},
+                    zoom=10.5, height=560, title="Trips started at each station",
+                    center={"lat": center_lat, "lon": center_lon},
+                    size_max=25, opacity=0.8,
+                    color_continuous_scale="Viridis", map_style="open-street-map",
+                )
+                fig.update_layout(
+                    map=dict(center=dict(lat=center_lat, lon=center_lon), zoom=10.5)
+                )
+                show(fig)
+                st.caption("Map tiles load from the internet — if the map looks empty, "
+                           "check your connection. Marker sizes scale with trip counts.")
         except Exception as exc:
-            st.warning(f"Map could not be rendered: {exc}")
+            st.warning(f"Interactive map could not be rendered: {exc}")
+            try:
+                fallback = (
+                    df.groupby(["start_station_name", "start_station_latitude",
+                                "start_station_longitude"])
+                    .size().rename("trips").reset_index()
+                    .dropna(subset=["start_station_latitude", "start_station_longitude"])
+                )
+                if not fallback.empty:
+                    st.info("Showing a tile-free fallback plot (no basemap needed):")
+                    fig_fb = px.scatter(
+                        fallback, x="start_station_longitude", y="start_station_latitude",
+                        size="trips", color="trips", hover_name="start_station_name",
+                        title="Station activity (fallback — longitude vs latitude)",
+                        labels={"start_station_longitude": "Longitude",
+                                "start_station_latitude": "Latitude"},
+                        color_continuous_scale="Viridis",
+                    )
+                    fig_fb.update_yaxes(scaleanchor="x", scaleratio=1)
+                    show(fig_fb, height=560)
+            except Exception as exc2:
+                st.warning(f"Fallback plot also failed: {exc2}")
 
 # ---- Rider Demographics -----------------------------------------------------------
 with tab_riders:
@@ -481,10 +531,10 @@ with tab_riders:
             st.caption(f"Most common age: **{int(df['age'].mode().iloc[0])}** · median "
                        f"**{df['age'].median():.0f}**.")
     with c2:
-        counts = df["member_gender"].value_counts().reindex(
-            [g for g in GENDER_ORDER if g in df["member_gender"].unique()]
-        ).reset_index()
-        counts.columns = ["gender", "count"]
+        counts = count_frame(
+            df["member_gender"], "gender",
+            order=[g for g in GENDER_ORDER if g in df["member_gender"].unique()],
+        )
         fig = px.pie(counts, names="gender", values="count", hole=0.45,
                      title="Gender Distribution", color_discrete_sequence=PALETTE)
         fig.update_traces(textposition="inside", textinfo="percent+label")
@@ -501,7 +551,15 @@ with tab_riders:
             )
             fig.update_yaxes(range=[0, df["duration_min"].quantile(0.95)])
             show(fig, height=360)
-            st.caption("Average duration: Unknown 15.7 > Other 13.2 > Female 12.1 > Male 10.6 min.")
+            avg_dur = (
+                df.dropna(subset=["member_gender"])
+                .groupby("member_gender")["duration_min"]
+                .mean()
+                .sort_values(ascending=False)
+            )
+            if not avg_dur.empty:
+                summary = " > ".join(f"{g} {v:.1f}" for g, v in avg_dur.items())
+                st.caption(f"Average duration: {summary} min.")
     with c4:
         if {"user_type", "age"}.issubset(df.columns):
             fig = px.violin(
@@ -510,7 +568,10 @@ with tab_riders:
                 color_discrete_sequence=["#2E86AB", "#F18F01"],
             )
             show(fig, height=360)
-            st.caption("Age profiles are close: median 32 for both Subscribers and Customers.")
+            med_age = df.dropna(subset=["age"]).groupby("user_type")["age"].median()
+            if not med_age.empty:
+                ages = " vs ".join(f"{ut} {v:.0f}" for ut, v in med_age.items())
+                st.caption(f"Age profiles are close: median {ages}.")
 
     if {"user_type", "duration_min"}.issubset(df.columns):
         fig = px.box(
@@ -520,7 +581,15 @@ with tab_riders:
         )
         fig.update_yaxes(range=[0, df["duration_min"].quantile(0.95)])
         show(fig, height=340)
-        st.caption("Customers ride considerably longer (mean 19.5 vs 10.2 min; median 13.2 vs 8.2 min).")
+        means = df.groupby("user_type")["duration_min"].mean()
+        if len(means) >= 2:
+            meds = df.groupby("user_type")["duration_min"].median()
+            longest, shortest = means.idxmax(), means.idxmin()
+            st.caption(
+                f"{longest} ride considerably longer (mean {means[longest]:.1f} vs "
+                f"{means[shortest]:.1f} min; median {meds[longest]:.1f} vs "
+                f"{meds[shortest]:.1f} min)."
+            )
 
 # ---- Data Quality -------------------------------------------------------------------
 with tab_quality:
