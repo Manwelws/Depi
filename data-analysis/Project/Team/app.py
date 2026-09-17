@@ -27,7 +27,7 @@ AGE_GROUP_BINS = {"Young": (18, 29), "Adult": (30, 54), "Senior": (55, 120)}
 TRIP_YEAR = 2019  # dataset period (Ford GoBike, February 2019); used only when
 # timestamps carry no usable date AND the birth-year is present.
 
-DEFAULT_FILE = Path(__file__).resolve().parent / "preprocessed_fordgobike.csv"
+DEFAULT_FILE = Path(__file__).resolve().parent / "data" / "processed" / "preprocessed_fordgobike.csv"
 
 
 # ------------------------------------------------------------------------------
@@ -48,7 +48,8 @@ def resolve_data_path() -> str:
     if not DEFAULT_FILE.exists():
         st.sidebar.error(
             f"Dataset not found at:\n\n`{DEFAULT_FILE}`\n\n"
-            "Place `preprocessed_fordgobike.csv` next to `app.py`."
+            "Place `preprocessed_fordgobike.csv` in `data/processed/`\n\n"
+            "(or set the `GOBIKE_DATA_CSV` environment variable)."
         )
     return str(DEFAULT_FILE)
 
